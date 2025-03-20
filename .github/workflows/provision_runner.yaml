@@ -46,30 +46,30 @@ jobs:
            if [[ "${{ github.event.inputs.ci-infra }}" == "github" || -z "${{ github.event.inputs.ci-infra }}" ]]; then
              if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "ubuntu-24.04-arm", "ts_host": "gh-runner-aarch64"},' >> "./MATRIX.json.tmp"
-               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "ubuntu-24.04-arm", "ts_host": "gh-runner-aarch64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
-               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x64"}' >> "./MATRIX.json.tmp"
              fi
           elif [[ "${{ github.event.inputs.ci-infra }}" == "blacksmith" ]]; then
              if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "blacksmith-arm", "ts_host": "bs-runner-aarch64"},' >> "./MATRIX.json.tmp"
-               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "blacksmith-arm", "ts_host": "bs-runner-aarch64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
-               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x64"}' >> "./MATRIX.json.tmp"
              fi
            elif [[ "${{ github.event.inputs.ci-infra }}" == "circle-ci" ]]; then
              curl -X "POST" -H "content-type: application/json" -qfsSL "${{ secrets.CIRCLE_CI_WEBHOOK_URL }}?secret=${{ secrets.CIRCLE_CI_SECRET }}"
              if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "arm64-linux-circle", "ts_host": "ci-runner-aarch64"},' >> "./MATRIX.json.tmp"
-               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
                echo '{"host": "aarch64-Linux", "runner": "arm64-linux-circle", "ts_host": "ci-runner-aarch64"}' >> "./MATRIX.json.tmp"
              elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
-               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x86_64"}' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x64"}' >> "./MATRIX.json.tmp"
              fi
            fi
           echo ']' >> "./MATRIX.json.tmp"
@@ -152,7 +152,7 @@ jobs:
           if command -v awk >/dev/null 2>&1 && command -v sed >/dev/null 2>&1; then
            PATH="$(echo "${PATH}" | awk 'BEGIN{RS=":";ORS=":"}{gsub(/\n/,"");if(!a[$0]++)print}' | sed 's/:*$//')"
           fi
-          TS_HOST="$(echo "${{ matrix.ci-host.ts_host }}" | tr -d '[:space:]')"
+          TS_HOST="$(echo "${{ matrix.ci-host.ts_host }}" | sed 's/_/-/g' | tr -d '[:space:]')"
           export HOME HOMETMP HOST_TRIPLET PATH SYSTMP TS_HOST USER
           echo "DEBIAN_FRONTEND=${DEBIAN_FRONTEND}" >> "${GITHUB_ENV}"
           echo "SYSTMP=${SYSTMP}" >> "${GITHUB_ENV}"
@@ -245,16 +245,6 @@ jobs:
            sudo apt-fast update -y
         continue-on-error: false
 
-      - name: Debloat Runner
-        if: env.CONTINUE_GHRUN != 'FALSE'
-        run: |
-          #Presets
-          set +x ; set +e
-          #--------------#
-          bash <(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Github/Runners/debloat_ubuntu.sh")
-          sudo apt autoremove -y -qq ; sudo apt autoclean -y -qq
-        continue-on-error: true
-
       - name: Setup TailScale [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
         if: env.CONTINUE_GHRUN != 'FALSE'
         run: |
@@ -293,6 +283,11 @@ jobs:
            sudo tailscale status --peers=false
            SSH_IP="$(sudo tailscale ip -4 | tr -d '\n' | tr -d '[:space:]')"
            TS_DNS="$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' | sed 's/\.$//' | tr -d '[:space:]')"
+           if ! echo "${SSH_IP}" | grep -qP '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'; then
+              echo -e "[-] Failed to connect tailscale\n"
+              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+             exit 1
+           fi
            echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no${NC}\"\n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no${NC}\""
         continue-on-error: true
 
@@ -312,8 +307,8 @@ jobs:
            --volume "/var/lib/containers/tmp-runner01:/tmp:rw,exec,dev" \
            "${POD_IMAGE}"
           sleep 10
-          POD_ID="$(sudo podman ps --filter "name=${TS_HOST}" --format json 2>/dev/null | jq --arg P_IMG "${POD_IMAGE}" -r '.[] | select(.Image == ${P_IMG}) | .Id' | tr -d '"'\''[:space:]')"
-          if [ -z "${POD_ID+x}" ]; then
+          POD_ID="$(sudo podman ps --filter "name=${TS_HOST}" --format json 2>/dev/null | jq --arg P_IMG "${POD_IMAGE}" -r '.[] | select(.Image == $P_IMG) | .Id' | tr -d '"'\''[:space:]')"
+          if ! sudo podman inspect "$POD_ID" &>/dev/null; then
              echo -e "\n[✗] FATAL: Could NOT find \${POD_ID}\n"
              podman ps -a
              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
@@ -328,6 +323,16 @@ jobs:
           fi
         continue-on-error: true
           
+      - name: Debloat Runner
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          #Presets
+          set +x ; set +e
+          #--------------#
+          bash <(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Github/Runners/debloat_ubuntu.sh")
+          sudo apt autoremove -y -qq ; sudo apt autoclean -y -qq
+        continue-on-error: true
+
       - name: Breakpoint || Sleep ∞
         if: env.CONTINUE_GHRUN != 'FALSE'
         run: |
