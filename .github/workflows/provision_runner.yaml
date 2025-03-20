@@ -245,6 +245,34 @@ jobs:
            sudo apt-fast update -y
         continue-on-error: false
 
+      - name: Configure Podman [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          if ! command -v podman &>/dev/null; then
+            echo -e "[-] Failed to find podman\n"
+            #Install Manually
+              sudo apt-fast update -y -qq
+              sudo apt-fast install podman -y -qq
+               if ! command -v podman &>/dev/null; then
+                  echo -e "[-] Failed to install Podman\n"
+                  echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+                 exit 1
+               else
+                  cat "$(systemctl show podman.service -p FragmentPath 2>/dev/null | cut -d '=' -f 2 | tr -d '[:space:]')"
+                  sudo systemctl daemon-reexec ; sudo systemctl daemon-reload
+                  sudo systemctl status podman --no-pager
+                  sudo systemctl reload "podman.service"
+                  sudo service podman reload ; sudo service podman restart ; sudo systemctl status podman --no-pager
+               fi
+          else
+            podman info
+            podman version
+          fi
+        continue-on-error: true
+
       - name: Setup TailScale [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
         if: env.CONTINUE_GHRUN != 'FALSE'
         run: |
