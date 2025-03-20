@@ -287,6 +287,9 @@ jobs:
               echo -e "[-] Failed to connect tailscale\n"
               echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
              exit 1
+           else
+             echo "SSH_IP=${SSH_IP}" >> "${GITHUB_ENV}"
+             echo "TS_DNS=${TS_DNS}" >> "${GITHUB_ENV}"
            fi
            echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no${NC}\"\n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no${NC}\""
         continue-on-error: true
@@ -314,12 +317,15 @@ jobs:
              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
             exit 1
           else
+             echo "POD_IMAGE=${POD_IMAGE}" >> "${GITHUB_ENV}"
+             echo "POD_ID=${POD_ID}" >> "${GITHUB_ENV}"
              sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'echo "kernel.apparmor_restrict_unprivileged_userns=0" | sudo tee "/etc/sysctl.d/98-apparmor-unuserns.conf"'
              sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'echo "0" | sudo tee "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"'
              sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo service procps restart'
              sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo sysctl -p "/etc/sysctl.conf"'
              sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo curl -qfsSL "${{ env.SSH_KEY_URL }}" | sudo sort -u -o "/etc/ssh/authorized_keys" ; sudo systemctl restart sshd'
-             echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no${NC}\" -p \"22222\" \n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no${NC}\" -p \"22222\""
+             echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no\" -p \"22222\" ${NC}\n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no\" -p \"22222\"${NC}"
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Linux/install_bins_curl.sh" | bash'
           fi
         continue-on-error: true
           
