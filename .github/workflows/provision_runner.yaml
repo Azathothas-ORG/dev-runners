@@ -1,0 +1,352 @@
+name: 🖥️ Dev Runner 🖥️
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      host:
+        description: Host (Arch+OS) [ALL ==> Provision All Hosts]
+        type: choice
+        options:
+          - "ALL"
+          - "aarch64-Linux"
+          - "x86_64-Linux"
+        default: "x86_64-Linux"
+
+      key-url:
+        description: Raw URL where SSH Keys are Located
+        required: true
+        default: "https://github.com/Azathothas.keys"
+
+      ci-infra:
+        description: CI Infra (What Build Servers to Use) [Default ==> GitHub]
+        type: choice
+        options:
+          - "github"
+          - "blacksmith"
+          - "circle-ci"
+        default: "github"  
+
+jobs:
+  preprocess:
+    runs-on: ubuntu-latest
+    outputs:
+      runner_matrix: ${{ steps.generate-matrix.outputs.runner_matrix }}
+    steps:
+      - name: Presetup
+        id: generate-matrix
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          echo '[' > "./MATRIX.json.tmp"
+           if [[ "${{ github.event.inputs.ci-infra }}" == "github" || -z "${{ github.event.inputs.ci-infra }}" ]]; then
+             if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "ubuntu-24.04-arm", "ts_host": "gh-runner-aarch64"},' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "ubuntu-24.04-arm", "ts_host": "gh-runner-aarch64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
+               echo '{"host": "x86_64-Linux", "runner": "ubuntu-latest", "ts_host": "gh-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             fi
+          elif [[ "${{ github.event.inputs.ci-infra }}" == "blacksmith" ]]; then
+             if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "blacksmith-arm", "ts_host": "bs-runner-aarch64"},' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "blacksmith-arm", "ts_host": "bs-runner-aarch64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
+               echo '{"host": "x86_64-Linux", "runner": "blacksmith", "ts_host": "bs-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             fi
+           elif [[ "${{ github.event.inputs.ci-infra }}" == "circle-ci" ]]; then
+             curl -X "POST" -H "content-type: application/json" -qfsSL "${{ secrets.CIRCLE_CI_WEBHOOK_URL }}?secret=${{ secrets.CIRCLE_CI_SECRET }}"
+             if [[ "${{ github.event.inputs.host }}" == "ALL" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "arm64-linux-circle", "ts_host": "ci-runner-aarch64"},' >> "./MATRIX.json.tmp"
+               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "aarch64-Linux" ]]; then
+               echo '{"host": "aarch64-Linux", "runner": "arm64-linux-circle", "ts_host": "ci-runner-aarch64"}' >> "./MATRIX.json.tmp"
+             elif [[ "${{ github.event.inputs.host }}" == "x86_64-Linux" ]]; then
+               echo '{"host": "x86_64-Linux", "runner": "amd64-linux-circle", "ts_host": "ci-runner-x86_64"}' >> "./MATRIX.json.tmp"
+             fi
+           fi
+          echo ']' >> "./MATRIX.json.tmp"
+          jq 'unique_by(.runner)' "./MATRIX.json.tmp" | jq . > "./MATRIX.json"
+          ESCAPED_MATRIX="$(cat "./MATRIX.json" | jq -c .)"
+          echo "runner_matrix=${ESCAPED_MATRIX}" >> "${GITHUB_OUTPUT}"
+        continue-on-error: false
+
+      - name: Sanity Check Input JSON
+        run: |
+          echo '${{ steps.generate-matrix.outputs.runner_matrix }}' | jq .
+        continue-on-error: true
+
+  provision:
+    needs: [preprocess]
+    strategy:
+      fail-fast: false
+      matrix:
+        ci-host: ${{ fromJson(needs.preprocess.outputs.runner_matrix) }}
+    name: "${{ matrix.ci-host.ts_host }} ==> (${{ matrix.ci-host.runner }})"
+    runs-on: "${{ matrix.ci-host.runner }}"
+    timeout-minutes: 355 #5h55min
+    steps:
+      - name: Exit if not called
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          if [[ "$(uname -m | tr -d '[:space:]')" == "aarch64" ]]; then
+            if [[ "${{ github.event.inputs.host }}" != "ALL" ]] && [[ "${{ github.event.inputs.host }}" != "aarch64-Linux" ]]; then
+              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            fi
+          elif [[ "$(uname -m | tr -d '[:space:]')" == "x86_64" ]]; then
+            if [[ "${{ github.event.inputs.host }}" != "ALL" ]] && [[ "${{ github.event.inputs.host }}" != "x86_64-Linux" ]]; then
+              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            fi
+          fi
+        continue-on-error: false
+
+      - name: Validate Required Secrets [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        env:
+          TS_KEY: "${{ secrets.TS_KEY }}"
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          # Check if any of the required secrets are missing
+          if [[ -z "${TS_KEY##*[[:space:]]}" ]] ; then
+             echo "::error::One or more required secrets are missing:"
+             [ -z "${TS_KEY##*[[:space:]]}" ] && echo "- TS_KEY is missing"
+             echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            exit 1
+          fi
+        continue-on-error: false
+
+      - name: Setup Required ENV [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          export DEBIAN_FRONTEND="noninteractive"
+          export USER="$(whoami)"
+          if [[ -z "${SYSTMP+x}" ]] || [[ -z "${SYSTMP##*[[:space:]]}" ]]; then
+           SYSTMP="$(dirname $(mktemp -u) | tr -d '[:space:]')"
+          fi
+          if [[ -z "${USER+x}" ]] || [[ -z "${USER##*[[:space:]]}" ]]; then
+           USER="$(whoami | tr -d '[:space:]')"
+          fi
+          if [[ -z "${HOME+x}" ]] || [[ -z "${HOME##*[[:space:]]}" ]]; then
+           HOME="$(getent passwd "${USER}" | awk -F':' 'NF >= 6 {print $6}' | tr -d '[:space:]')"
+          fi
+          if [[ -z "${HOMETMP+x}" ]] || [[ -z "${HOMETMP##*[[:space:]]}" ]]; then
+           HOMETMP="${HOME}/tmp"
+          fi
+          PATH="${HOME}/.local/share/soar/bin:${HOME}/bin:${HOME}/.cargo/bin:${HOME}/.cargo/env:${HOME}/.config/guix/current/bin/guix:${HOME}/.go/bin:${HOME}/go/bin:${HOME}/.local/bin:${HOME}/miniconda3/bin:${HOME}/miniconda3/condabin:/root/.config/guix/current/bin/guix:/usr/local/zig:/usr/local/zig/lib:/usr/local/zig/lib/include:/usr/local/musl/bin:/usr/local/musl/lib:/usr/local/musl/include:${PATH}"
+          if command -v awk >/dev/null 2>&1 && command -v sed >/dev/null 2>&1; then
+           PATH="$(echo "${PATH}" | awk 'BEGIN{RS=":";ORS=":"}{gsub(/\n/,"");if(!a[$0]++)print}' | sed 's/:*$//')"
+          fi
+          TS_HOST="$(echo "${{ matrix.ci-host.ts_host }}" | tr -d '[:space:]')"
+          export HOME HOMETMP HOST_TRIPLET PATH SYSTMP TS_HOST USER
+          echo "DEBIAN_FRONTEND=${DEBIAN_FRONTEND}" >> "${GITHUB_ENV}"
+          echo "SYSTMP=${SYSTMP}" >> "${GITHUB_ENV}"
+          echo "USER=${USER}" >> "${GITHUB_ENV}"
+          echo "HOME=${HOME}" >> "${GITHUB_ENV}"
+          echo "HOMETMP=${HOMETMP}" >> "${GITHUB_ENV}"
+          echo "PATH=${PATH}" >> "${GITHUB_ENV}"
+          echo "TS_HOST=${TS_HOST}" >> "${GITHUB_ENV}"
+          ##Colors
+           GREEN='\033[32m' ; echo "GREEN=${GREEN}" >> "${GITHUB_ENV}"
+           BLUE='\033[34m' ; echo "BLUE=${BLUE}" >> "${GITHUB_ENV}"
+           YELLOW='\033[33m' ; echo "YELLOW=${YELLOW}" >> "${GITHUB_ENV}"
+           PURPLE='\033[35m' ; echo "PURPLE=${PURPLE}" >> "${GITHUB_ENV}"
+           VIOLET='\033[0;35m' ; echo "VIOLET=${VIOLET}" >> "${GITHUB_ENV}"
+           NC='\033[0m' ; echo "NC=${NC}" >> "${GITHUB_ENV}"
+          ##SSH
+           SSH_KEY_URL="$(echo "${{ github.event.inputs.key-url }}" | tr -d '[:space:]')"
+           KEY_STATUS="$(curl -X "HEAD" -qfsSL "${SSH_KEY_URL}" -I | sed -n 's/^[[:space:]]*HTTP\/[0-9.]*[[:space:]]\+\([0-9]\+\).*/\1/p' | tail -n1 | tr -d '[:space:]')"
+           if echo "${KEY_STATUS}" | grep -qiv '200$'; then
+             echo -e "\n[✗] FATAL: Failed to Fetch SSH Keys <== ${SSH_KEY_URL}\n"
+             echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            exit 1
+           else
+             export SSH_KEY_URL
+             echo "SSH_KEY_URL=${SSH_KEY_URL}" >> "${GITHUB_ENV}"
+           fi
+        continue-on-error: false
+
+      - name: Disable apparmor_restrict_unprivileged_userns #Required for runimage etc
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          #presets
+          set +x ; set +e
+          #-------------#
+          echo "kernel.apparmor_restrict_unprivileged_userns=0" | sudo tee "/etc/sysctl.d/98-apparmor-unuserns.conf"
+          echo "0" | sudo tee "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+          sudo service procps restart
+          sudo sysctl -p "/etc/sysctl.conf"
+        continue-on-error: true
+
+      - name: Setup Required Deps [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          ##Core
+           apt update -y -qq || sudo apt update -y -qq
+           S_CMD="apt install apt-transport-https apt-utils bash ca-certificates coreutils curl dos2unix file git gnupg2 htop jq lsof moreutils software-properties-common sudo tar tmux util-linux wget -y -qq"
+           bash -c "${S_CMD}" || sudo bash -c "${S_CMD}"
+           echo 'debconf debconf/frontend select Noninteractive' | sudo debconf-set-selections
+           debconf-show debconf || sudo debconf-show debconf
+          ##Apt-Fast
+           #https://github.com/ilikenwf/apt-fast?tab=readme-ov-file#quick-install 
+           bash -c "$(curl -qfsSL 'https://raw.githubusercontent.com/ilikenwf/apt-fast/master/quick-install.sh')"
+           if ! command -v apt-fast &>/dev/null; then
+             echo -e "[-] Failed to find apt-fast\n"
+             echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            exit 1
+           fi
+          ##Required Deps
+           sudo apt-fast update -y -qq
+           sudo setcap 'cap_net_raw+ep' "$(which ping)"
+           echo 'net.ipv4.ip_forward = 1' | sudo tee -a "/etc/sysctl.conf"
+           echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a "/etc/sysctl.conf"
+           sudo sysctl -p "/etc/sysctl.conf"
+           sudo apt-fast install 'openssh*' ssh -y -qq
+           sudo locale-gen "en_US.UTF-8"
+          ##Tools 
+           bash <(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Linux/install_bins_curl.sh")
+          ##SSH 
+           curl -qfsSL "${SSH_KEY_URL}" | tee -a "${HOME}/.ssh/authorized_keys"
+           sudo curl -qfsSL "${SSH_KEY_URL}" | sudo tee -a "/etc/ssh/authorized_keys"
+           sudo chmod 600 -v "${HOME}/.ssh/authorized_keys" "/etc/ssh/authorized_keys"
+           sudo curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Linux/sshd_config_passwordless" -o "/etc/ssh/sshd_config"
+          ##Bashrc 
+           sudo curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Linux/.bashrc" -o "/etc/bash.bashrc"
+           sudo dos2unix --quiet "/etc/bash.bashrc" 2>/dev/null
+           sudo ln -fsv "/etc/bash.bashrc" "/root/.bashrc" 2>/dev/null
+           sudo ln -fsv "/etc/bash.bashrc" "/etc/bash/bashrc" 2>/dev/null
+           ln -fsv "/etc/bash.bashrc" "${HOME}/.bashrc" 2>/dev/null
+           echo "LC_ALL=en_US.UTF-8" | sudo tee -a "/etc/environment"
+           echo "en_US.UTF-8 UTF-8" | sudo tee -a "/etc/locale.gen"
+           echo "LANG=en_US.UTF-8" | sudo tee -a "/etc/locale.conf"
+           sudo locale-gen "en_US.UTF-8"
+           sudo apt-fast update -y
+           sudo apt-fast install -y tzdata
+           sudo ln -fsv "/usr/share/zoneinfo/UTC" "/etc/localtime"
+           sudo dpkg-reconfigure --frontend noninteractive tzdata
+           sudo apt-fast update -y
+        continue-on-error: false
+
+      - name: Debloat Runner
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          #Presets
+          set +x ; set +e
+          #--------------#
+          bash <(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/devscripts/refs/heads/main/Github/Runners/debloat_ubuntu.sh")
+          sudo apt autoremove -y -qq ; sudo apt autoclean -y -qq
+        continue-on-error: true
+
+      - name: Setup TailScale [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          ##Net Config
+           sudo apt-fast install ethtool iw networkd-dispatcher -y
+           if ! command -v ethtool &>/dev/null; then
+              echo -e "[-] Failed to find ethtool\n"
+              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+             exit 1
+           fi
+           sudo systemctl enable "networkd-dispatcher" --now
+           sudo systemctl restart "networkd-dispatcher" && sleep 5 
+           sudo systemctl status "networkd-dispatcher" --no-pager
+           NETDEV="$(ip route show '0/0' | grep -oP 'dev\s+\K\S+' | tr -d '"'\''[:space:]')"
+           sudo ethtool -K "${NETDEV}" rx-udp-gro-forwarding on rx-gro-list off
+           printf '#!/bin/sh\n\nethtool -K %s rx-udp-gro-forwarding on rx-gro-list off \n' "${NETDEV}" | sudo tee "/etc/networkd-dispatcher/routable.d/50-tailscale"
+           sudo chmod 755 "/etc/networkd-dispatcher/routable.d/50-tailscale"
+           sudo systemctl restart "networkd-dispatcher" && sleep 5 
+           sudo systemctl status "networkd-dispatcher" --no-pager
+          ##TailScale 
+           curl -qfsSL "https://tailscale.com/install.sh" | sudo bash -s -- -h
+           sudo systemctl daemon-reexec
+           sudo systemctl daemon-reload
+           if ! command -v tailscale &>/dev/null || ! command -v tailscaled &>/dev/null; then
+              echo -e "[-] Failed to find tailscale\n"
+              echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+             exit 1
+           fi
+           sudo tailscale up --ssh --authkey="${{ secrets.TS_KEY }}" --hostname="${TS_HOST}" --accept-dns="true" --accept-risk="all" --accept-routes="false" --shields-up="false" --advertise-exit-node --reset
+           sudo tailscale set --auto-update="true"
+           sudo usermod -p '*' "${USER}"
+          ##Status
+           sudo tailscale status --peers=false
+           SSH_IP="$(sudo tailscale ip -4 | tr -d '\n' | tr -d '[:space:]')"
+           TS_DNS="$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' | sed 's/\.$//' | tr -d '[:space:]')"
+           echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no${NC}\"\n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no${NC}\""
+        continue-on-error: true
+
+      - name: Run Container [${{ matrix.ci-host.ts_host }}<==>${{ matrix.ci-host.runner }}]
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          ##presets
+          set +x ; set +e
+          #-------------#
+          sudo mkdir -p "/var/lib/containers/tmp-runner01"
+          sudo chmod 1777 -v "/var/lib/containers/tmp-runner01"
+          POD_IMAGE="docker.io/pkgforge/ubuntu-systemd-base:$(uname -m)"
+          sudo podman run --detach --privileged \
+           --device "/dev/fuse" --network="bridge" --publish "22222:22" \
+           --systemd="always" --ulimit="host" --tz="UTC" \
+           --pull="always" --name="${TS_HOST}" --hostname "${TS_HOST}" \
+           --volume "/var/lib/containers/tmp-runner01:/tmp:rw,exec,dev" \
+           "${POD_IMAGE}"
+          sleep 10
+          POD_ID="$(sudo podman ps --filter "name=${TS_HOST}" --format json 2>/dev/null | jq --arg P_IMG "${POD_IMAGE}" -r '.[] | select(.Image == ${P_IMG}) | .Id' | tr -d '"'\''[:space:]')"
+          if [ -z "${POD_ID+x}" ]; then
+             echo -e "\n[✗] FATAL: Could NOT find \${POD_ID}\n"
+             podman ps -a
+             echo "CONTINUE_GHRUN=FALSE" >> "${GITHUB_ENV}"
+            exit 1
+          else
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'echo "kernel.apparmor_restrict_unprivileged_userns=0" | sudo tee "/etc/sysctl.d/98-apparmor-unuserns.conf"'
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'echo "0" | sudo tee "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"'
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo service procps restart'
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo sysctl -p "/etc/sysctl.conf"'
+             sudo podman exec -it -u "runner" "${POD_ID}" bash -c 'sudo curl -qfsSL "${{ env.SSH_KEY_URL }}" | sudo sort -u -o "/etc/ssh/authorized_keys" ; sudo systemctl restart sshd'
+             echo -e "${GREEN}SSH: ${YELLOW}ssh \"${USER}@${SSH_IP}\" -o \"StrictHostKeyChecking=no${NC}\" -p \"22222\" \n     ${YELLOW}ssh \"${USER}@${TS_DNS}\" -o \"StrictHostKeyChecking=no${NC}\" -p \"22222\""
+          fi
+        continue-on-error: true
+          
+      - name: Breakpoint || Sleep ∞
+        if: env.CONTINUE_GHRUN != 'FALSE'
+        run: |
+          #Presets
+          set +x ; set +e
+          #--------------#
+          #sleep infinity
+          #while :; do sleep 1; done
+          sleep 345m
+        continue-on-error: true
+
+      - name: Self-Kill
+        if: always()
+        run: |
+          #Presets
+          set +x ; set +e
+          #--------------#
+          [[ -f "/tmp/GHA_CI_STATUS" && -w "/tmp/GHA_CI_STATUS" ]] && echo "" > "/tmp/GHA_CI_STATUS"
+          if [[ -d "/tmp" && -w "/tmp" ]]; then
+            echo "EXITED" | tee "/tmp/GHA_CI_STATUS"
+          fi
+        continue-on-error: true
